@@ -301,29 +301,34 @@ print(f"{_patch_tag} 已修正 vLLM --quantization 为 compressed-tensors", flus
 #   切到 FlashAttention，绕过 FlashInfer 的 JIT 编译。
 #   MTP（speculative decoding）不受影响。
 #   同时保留环境变量设置（双保险）。
-#   2026-10-19 V32 教训：FLASH_ATTN 不支持 FP8 KV cache
-#   （"FP8 KV cache requires FA3 on SM90 or FA4 on SM100"）。
-#   因此改为有条件强制：仅当 KV dtype 不是 fp8 时才强制 FLASH_ATTN；
-#   fp8 时跳过，让 vLLM 自动选择兼容的 backend。
-import os as _os_attn
-_kv_dtype_4h = _os_attn.environ.get("TAAF_VLLM_KV_CACHE_DTYPE", "auto").strip().lower()
-if _kv_dtype_4h != "fp8":
-    _os_attn.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
-    print(f"{_patch_tag} 已设 VLLM_ATTENTION_BACKEND=FLASH_ATTN（环境变量）", flush=True)
-    # 在 vLLM 命令里硬加 --attention-backend 参数
-    _t, n = re.subn(
-        r'^        "--quantization",\n^        "compressed-tensors",\n',
-        '        "--quantization",\n        "compressed-tensors",\n'
-        '        "--attention-backend",\n        "flash_attn",\n',
-        _t,
-        flags=re.M,
-    )
-    assert n == 1, f"添加 attention-backend 参数失败：匹配到 {n} 处（期望 1 处）"
-    print(f"{_patch_tag} 已在 vLLM 命令中添加 --attention-backend flash-attn", flush=True)
-else:
-    print(f"{_patch_tag} 检测到 FP8 KV cache，跳过 FLASH_ATTN 强制（不兼容），让 vLLM 自动选择 backend", flush=True)
-del _os_attn
-del _kv_dtype_4h
+#   2026-10-19 V32/V33 教训：
+#   1. FLASH_ATTN 不支持 FP8 KV cache
+#      ("FP8 KV cache requires FA3 on SM90 or FA4 on SM100")。
+#   2. V33 发现：补丁是 build-time 执行的，此时 In[5] 还没设置
+#      TAAF_VLLM_KV_CACHE_DTYPE，所以 build-time 查环境变量永远查不到 fp8。
+#   修法：在 serving_setup.py 的 server_command() 里注入 RUNTIME 判断，
+#   在 vLLM 命令构建时（此时环境变量已设置）再决定是否加 --attention-backend。
+_t, n = re.subn(
+    r'^    return command$',
+    '    # 4h-runtime: 仅当非 FP8 KV 时强制 FLASH_ATTN (V33 fix)\n'
+    '    # FLASH_ATTN 不支持 FP8 KV; fp8 时跳过让 vLLM 自动选 backend\n'
+    '    import os as _os_4h_rt\n'
+    '    _kv_4h_rt = _os_4h_rt.environ.get("TAAF_VLLM_KV_CACHE_DTYPE", "auto").strip().lower()\n'
+    '    if _kv_4h_rt != "fp8":\n'
+    '        _os_4h_rt.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"\n'
+    '        command.extend(["--attention-backend", "flash_attn"])\n'
+    '        print("[4h] 已强制 FLASH_ATTN (KV dtype: " + _kv_4h_rt + ")", flush=True)\n'
+    '    else:\n'
+    '        print("[4h] FP8 KV 检测到，跳过 FLASH_ATTN 强制", flush=True)\n'
+    '    del _os_4h_rt\n'
+    '    del _kv_4h_rt\n'
+    '    return command',
+    _t,
+    count=1,
+    flags=re.M,
+)
+assert n == 1, f"4h runtime 注入失败：匹配到 {n} 处（期望 1 处）"
+print(f"{_patch_tag} 已在 server_command() 注入 4h runtime 条件判断", flush=True)
 
 # --- 4i. KV cache dtype 白名单扩充：允许 bfloat16 ---
 # 背景（2026-10-18 V26/V27 实测，serving_setup_audit.md 6.1 节）:
