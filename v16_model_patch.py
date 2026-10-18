@@ -288,6 +288,19 @@ _t, n = re.subn(
 assert n == 1, f"修正 quantization 参数失败：匹配到 {n} 处（期望 1 处）"
 print(f"{_patch_tag} 已修正 vLLM --quantization 为 compressed-tensors", flush=True)
 
+# --- 4h. 切换 vLLM attention backend，绕过 FlashInfer JIT ---
+# 背景（2026-10-18 V22 实测，用户已授权）:
+#   模型权重加载成功后，FlashInfer JIT 编译失败：
+#   "/usr/bin/ld: cannot find -lcudart: No such file or directory"
+#   （ninja 构建失败，EngineCore 关闭，vLLM 服务无法就绪）。
+#   这是 FlashInfer 在 Kaggle 环境下的链接器问题。
+#   修法：设 VLLM_ATTENTION_BACKEND=FLASH_ATTN，切到 FlashAttention，
+#   绕过 FlashInfer 的 JIT 编译。MTP（speculative decoding）不受影响。
+import os as _os_attn
+_os_attn.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+print(f"{_patch_tag} 已设 VLLM_ATTENTION_BACKEND=FLASH_ATTN（绕过 FlashInfer JIT）", flush=True)
+del _os_attn
+
 _p.write_text(_t)
 print(f"{_patch_tag} 补丁写入完成: {_p}", flush=True)
 
