@@ -301,20 +301,29 @@ print(f"{_patch_tag} 已修正 vLLM --quantization 为 compressed-tensors", flus
 #   切到 FlashAttention，绕过 FlashInfer 的 JIT 编译。
 #   MTP（speculative decoding）不受影响。
 #   同时保留环境变量设置（双保险）。
+#   2026-10-19 V32 教训：FLASH_ATTN 不支持 FP8 KV cache
+#   （"FP8 KV cache requires FA3 on SM90 or FA4 on SM100"）。
+#   因此改为有条件强制：仅当 KV dtype 不是 fp8 时才强制 FLASH_ATTN；
+#   fp8 时跳过，让 vLLM 自动选择兼容的 backend。
 import os as _os_attn
-_os_attn.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
-print(f"{_patch_tag} 已设 VLLM_ATTENTION_BACKEND=FLASH_ATTN（环境变量）", flush=True)
+_kv_dtype_4h = _os_attn.environ.get("TAAF_VLLM_KV_CACHE_DTYPE", "auto").strip().lower()
+if _kv_dtype_4h != "fp8":
+    _os_attn.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+    print(f"{_patch_tag} 已设 VLLM_ATTENTION_BACKEND=FLASH_ATTN（环境变量）", flush=True)
+    # 在 vLLM 命令里硬加 --attention-backend 参数
+    _t, n = re.subn(
+        r'^        "--quantization",\n^        "compressed-tensors",\n',
+        '        "--quantization",\n        "compressed-tensors",\n'
+        '        "--attention-backend",\n        "flash_attn",\n',
+        _t,
+        flags=re.M,
+    )
+    assert n == 1, f"添加 attention-backend 参数失败：匹配到 {n} 处（期望 1 处）"
+    print(f"{_patch_tag} 已在 vLLM 命令中添加 --attention-backend flash-attn", flush=True)
+else:
+    print(f"{_patch_tag} 检测到 FP8 KV cache，跳过 FLASH_ATTN 强制（不兼容），让 vLLM 自动选择 backend", flush=True)
 del _os_attn
-# 在 vLLM 命令里硬加 --attention-backend 参数
-_t, n = re.subn(
-    r'^        "--quantization",\n^        "compressed-tensors",\n',
-    '        "--quantization",\n        "compressed-tensors",\n'
-    '        "--attention-backend",\n        "flash_attn",\n',
-    _t,
-    flags=re.M,
-)
-assert n == 1, f"添加 attention-backend 参数失败：匹配到 {n} 处（期望 1 处）"
-print(f"{_patch_tag} 已在 vLLM 命令中添加 --attention-backend flash-attn", flush=True)
+del _kv_dtype_4h
 
 # --- 4i. KV cache dtype 白名单扩充：允许 bfloat16 ---
 # 背景（2026-10-18 V26/V27 实测，serving_setup_audit.md 6.1 节）:
