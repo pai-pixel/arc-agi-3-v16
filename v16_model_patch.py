@@ -316,6 +316,57 @@ _t, n = re.subn(
 assert n == 1, f"添加 attention-backend 参数失败：匹配到 {n} 处（期望 1 处）"
 print(f"{_patch_tag} 已在 vLLM 命令中添加 --attention-backend flash-attn", flush=True)
 
+# --- 4i. KV cache dtype 白名单扩充：允许 bfloat16 ---
+# 背景（2026-10-18 V26/V27 实测，serving_setup_audit.md 6.1 节）:
+#   --attention-backend flash_attn 在 sm_120（RTX Pro 6000 Blackwell）
+#   上拒绝 FP8 KV cache：
+#   "FP8 KV cache requires FA3 on SM90 or FA4 on SM100"。
+#   tuning 白名单（第 427 行）只认 auto/fp8；而 auto 会被 server_command
+#   第 2330-2337 行整个省略 --kv-cache-dtype 参数，vLLM 对 FP8-attention
+#   混合检查点又会把 auto 推断回 fp8 → 死锁。
+#   vLLM 官方 CLI 文档确认 bfloat16 是合法值，且是"默认 fp8 模型的
+#   逃生口"；--dtype bfloat16 与模型 dtype 一致，满足"显式 bfloat16
+#   须与模型 dtype 一致"的要求。FLASH_ATTN + bf16 KV cache 在任何
+#   架构上都合法。
+_t, n = re.subn(
+    r'if kv_cache_dtype not in \{"auto", "fp8"\}:',
+    'if kv_cache_dtype not in {"auto", "fp8", "bfloat16"}:',
+    _t,
+    count=1,
+)
+assert n == 1, f"KV 白名单(427行)替换失败：匹配到 {n} 处"
+print(f"{_patch_tag} KV cache dtype 白名单已扩充 bfloat16（427行）", flush=True)
+# validate_vllm_tuning_document 第 509 行同步（多行写法，锚定错误码）
+_t, n = re.subn(
+    r'\] not in \{"auto", "fp8"\}:',
+    '] not in {"auto", "fp8", "bfloat16"}:',
+    _t,
+    count=1,
+)
+assert n == 1, f"KV 白名单(509行)替换失败：匹配到 {n} 处"
+print(f"{_patch_tag} KV cache dtype 白名单已扩充 bfloat16（509行）", flush=True)
+
+# --- 4j. 中和 capture_process_and_gpu() 的 PLE 日志硬断言 ---
+# 背景（2026-10-18 审计，serving_setup.py 第 2885-2888 行）:
+#   非 fast 模式下该函数要求 vLLM 日志出现 PLE 字样：
+#   "vLLM did not prove native PLE CPU-offload readiness"。
+#   PLE 是老模型（180B MoE）专用的 CPU offload 层，新模型永远
+#   打不出这行日志 → 非 fast 模式必挂。
+#   当前 TAAF_KAGGLE_FAST_START=1 时该函数被跳过，属预防性修复，
+#   防止 fast 模式开关被意外关闭时踩雷。风格同 4d/4e。
+_t, n = re.subn(
+    r'    if any\(value is None for value in ple_log_matches\.values\(\)\):\n'
+    r'        raise RuntimeError\(\n'
+    r'            f"vLLM did not prove native PLE CPU-offload readiness: \{ple_log_matches\}"\n'
+    r'        \)\n',
+    '    if any(value is None for value in ple_log_matches.values()):\n'
+    '        print("[v16-model-patch] PLE log matches 缺失（新模型无 PLE 层，忽略）", flush=True)\n',
+    _t,
+    count=1,
+)
+assert n == 1, f"PLE 日志断言中和失败：匹配到 {n} 处"
+print(f"{_patch_tag} capture_process_and_gpu() PLE 日志断言已中和", flush=True)
+
 _p.write_text(_t)
 print(f"{_patch_tag} 补丁写入完成: {_p}", flush=True)
 
