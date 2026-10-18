@@ -308,6 +308,10 @@ print(f"{_patch_tag} 已修正 vLLM --quantization 为 compressed-tensors", flus
 #      TAAF_VLLM_KV_CACHE_DTYPE，所以 build-time 查环境变量永远查不到 fp8。
 #   修法：在 serving_setup.py 的 server_command() 里注入 RUNTIME 判断，
 #   在 vLLM 命令构建时（此时环境变量已设置）再决定是否加 --attention-backend。
+#   2026-10-19 V34 教训：FP8 时 vLLM 自动选 FLASHINFER，但 FlashInfer JIT
+#   在 Kaggle 上因 "/usr/bin/ld: cannot find -lcudart" 失败（老问题，
+#   当年 4h 就是为绕开它）。修法：FP8 分支里设置 LIBRARY_PATH，
+#   把常见 CUDA lib 目录加进去，让 ld 能找到 libcudart。
 _t, n = re.subn(
     r'^    return command$',
     '    # 4h-runtime: 仅当非 FP8 KV 时强制 FLASH_ATTN (V33 fix)\n'
@@ -320,6 +324,13 @@ _t, n = re.subn(
     '        print("[4h] 已强制 FLASH_ATTN (KV dtype: " + _kv_4h_rt + ")", flush=True)\n'
     '    else:\n'
     '        print("[4h] FP8 KV 检测到，跳过 FLASH_ATTN 强制", flush=True)\n'
+    '        # V34 fix: FlashInfer JIT 需要 ld 找到 libcudart，补 LIBRARY_PATH\n'
+    '        _cuda_libs = ["/usr/local/cuda/lib64", "/usr/lib/x86_64-linux-gnu", "/opt/conda/lib", "/usr/local/lib"]\n'
+    '        _lp = _os_4h_rt.environ.get("LIBRARY_PATH", "")\n'
+    '        _os_4h_rt.environ["LIBRARY_PATH"] = ":".join(_cuda_libs) + (":" + _lp if _lp else "")\n'
+    '        _ldp = _os_4h_rt.environ.get("LD_LIBRARY_PATH", "")\n'
+    '        _os_4h_rt.environ["LD_LIBRARY_PATH"] = ":".join(_cuda_libs) + (":" + _ldp if _ldp else "")\n'
+    '        print("[4h] 已设置 LIBRARY_PATH/LD_LIBRARY_PATH 含 CUDA lib 目录", flush=True)\n'
     '    del _os_4h_rt\n'
     '    del _kv_4h_rt\n'
     '    return command',
