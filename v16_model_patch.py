@@ -341,6 +341,34 @@ _t, n = re.subn(
 assert n == 1, f"4h runtime 注入失败：匹配到 {n} 处（期望 1 处）"
 print(f"{_patch_tag} 已在 server_command() 注入 4h runtime 条件判断", flush=True)
 
+# --- 4k. runtime_environment() 里补 LIBRARY_PATH（V36 根因修复）---
+# 背景（2026-10-19 V36 实测）:
+#   4h 在 server_command() 里设 os.environ["LIBRARY_PATH"]，但
+#   runtime_environment() 早在 server_command() 被调用之前就已经
+#   用 env = os.environ.copy() 定型了 env 字典，且只设了 LD_LIBRARY_PATH
+#   没设 LIBRARY_PATH。start_server() 用 subprocess.Popen(env=env)，
+#   4h 设的 os.environ 根本没进 vLLM 子进程（V36 日志实证）。
+#   修法：直接在 runtime_environment() 的 env 字典里加 LIBRARY_PATH，
+#   复用 LD_LIBRARY_PATH 的同一个目录列表（cuda_lib 本来就在里面，
+#   runtime_environment 第 1343 行已校验 libcudart.so 存在）。
+_t, n = re.subn(
+    r'    env\["LD_LIBRARY_PATH"\] = os\.pathsep\.join\(\n'
+    r'        \[str\(path\) for path in library_dirs if path\.is_dir\(\)\]\n'
+    r'        \+ \(\[env\["LD_LIBRARY_PATH"\]\] if env\.get\("LD_LIBRARY_PATH"\) else \[\]\)\n'
+    r'    \)\n',
+    '    env["LD_LIBRARY_PATH"] = os.pathsep.join(\n'
+    '        [str(path) for path in library_dirs if path.is_dir()]\n'
+    '        + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else [])\n'
+    '    )\n'
+    '    # [v16-model-patch 4k] 补 LIBRARY_PATH 给 ld/ninja 用（V36 根因：只设 LD_LIBRARY_PATH 不够，见 start_server 的 env=env）\n'
+    '    env["LIBRARY_PATH"] = env["LD_LIBRARY_PATH"]\n'
+    '    print("[v16-model-patch 4k] LIBRARY_PATH 已注入 env 字典", flush=True)\n',
+    _t,
+    count=1,
+)
+assert n == 1, f"4k LIBRARY_PATH 注入失败：匹配到 {n} 处（期望 1 处），需人工检查代码格式"
+print(f"{_patch_tag} 已在 runtime_environment() 注入 LIBRARY_PATH (4k)", flush=True)
+
 # --- 4i. KV cache dtype 白名单扩充：允许 bfloat16 ---
 # 背景（2026-10-18 V26/V27 实测，serving_setup_audit.md 6.1 节）:
 #   --attention-backend flash_attn 在 sm_120（RTX Pro 6000 Blackwell）
